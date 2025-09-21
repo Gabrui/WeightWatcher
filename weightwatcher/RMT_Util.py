@@ -194,24 +194,74 @@ _smooth_W_numpy = _smooth_W_accurate
 
 # 
 try:
-    import torch
-    if torch.cuda.is_available() :
-        logger.info("Torch CUDA available, using torch_wrapper")
+
+    EPSILON = HALF_EPSILON
+    EVALS_THRESH = EVALS_HALF_THRESH
+    
+    logger.info(f"Using EPSILON = {EPSILON}")
+    logger.info(f"Using EVALS_THRESH = {EVALS_THRESH}")
+
+    _HAS_TF_GPU = False
+    try:
+        import tensorflow as tf
+        _HAS_TF_GPU = len(tf.config.list_physical_devices('GPU')) > 0
+    except ImportError:
+        pass
+
+    if _HAS_TF_GPU:
+        logger.info("TF GPU available, using TF")
+        def _eig_full_fast(M):
+            M = tf.convert_to_tensor(M, dtype=tf.float32)
+            L, V = tf.linalg.eig(M)
+            return L.numpy(), V.numpy()
+
+        def _svd_full_fast(M):
+            M = tf.convert_to_tensor(M, dtype=tf.float32)
+            s, U, V = tf.linalg.svd(M, full_matrices=False, compute_uv=True)
+            Vh = tf.linalg.adjoint(V)
+            return U.numpy(), s.numpy(), Vh.numpy()
+
+        def _svd_vals_fast(M):
+            M = tf.convert_to_tensor(M, dtype=tf.float32)
+            s = tf.linalg.svd(M, compute_uv=False)
+            return s.numpy()
+
+        def _svd_lowrank_fast(M, k):
+            M = tf.convert_to_tensor(M, dtype=tf.float32)
+            s, U, V = tf.linalg.svd(M, full_matrices=False, compute_uv=True)
+            return U[:, :k].numpy(), s[:k].numpy(), tf.transpose(V[:, :k]).numpy()
+
+        def _svd_values_fast(M, k):
+            M = tf.convert_to_tensor(M, dtype=tf.float32)
+            s = tf.linalg.svd(M, compute_uv=False)
+            return s[:k].numpy()
+
+        def _smooth_W(W, n_comp):
+            W = tf.convert_to_tensor(W, dtype=tf.float32)
+            s, U, V = tf.linalg.svd(W, full_matrices=False, compute_uv=True)
+            U_k, s_k, V_k = U[:, :n_comp], s[:n_comp], V[:, :n_comp]
+            S_k = tf.linalg.diag(s_k)
+            smoothed = tf.matmul(U_k, tf.matmul(S_k, tf.transpose(V_k)))
+            if W.shape[0] < W.shape[1]:
+                smoothed = tf.transpose(smoothed)
+            return smoothed.numpy()
+
+        def _smooth_W_fast(W, k):
+            return _smooth_W(W, k)
+
+            
+    else:
+        import torch
+        logger.info("Torch CPU available, using torch_wrapper")
 
         # float changed to half to save memory
         torch_T_to_np = lambda T: T.to("cpu").half().numpy()
         torch_T_to_np_32 = lambda T: T.to("cpu").float().numpy()
-        EPSILON = HALF_EPSILON
-        EVALS_THRESH = EVALS_HALF_THRESH
-        
-        logger.info(f"Using EPSILON = {EPSILON}")
-        logger.info(f"Using EVALS_THRESH = {EVALS_THRESH}")
 
          
         def torch_wrapper(M, f):
-            torch.cuda.empty_cache()
             with torch.no_grad():
-                M_cuda = torch.Tensor(M).to("cuda")
+                M_cuda = torch.Tensor(M)
                 rvals = f(M_cuda)
             del M_cuda
             return rvals          
@@ -227,35 +277,25 @@ try:
             return torch_T_to_np_32(S)
         
         def _svd_lowrank_fast(M, k):
-            torch.cuda.empty_cache()
             with torch.no_grad():
-                M_cuda = torch.Tensor(M).to("cuda")
+                M_cuda = torch.Tensor(M)
                 U, S, V = torch.svd_lowrank(M_cuda, q=k)
             del M_cuda
             return torch_T_to_np_32(U), torch_T_to_np_32(S), torch_T_to_np_32(V).T
         
         
         def _svd_values_fast(M, k):
-            torch.cuda.empty_cache()
             with torch.no_grad():
-                M_cuda = torch.Tensor(M).to("cuda")
+                M_cuda = torch.Tensor(M)
                 _, S, _ = torch.svd_lowrank(M_cuda, q=k)
             del M_cuda
             return torch_T_to_np_32(S)
         
         def _smooth_W_fast(W, k):
-            torch.cuda.empty_cache()
             with torch.no_grad():
                 resuit = _smooth_W_torch(W, k)
             return resuit
-            
-    else:
-        msg_svd = "SciPy"
-        if has_mac_accelerate():
-            msg_svd = "NumPy"
 
-        logger.warning(f"PyTorch is available but CUDA is not. Defaulting to {msg_svd} for SVD")
-        raise ImportError()
     
 except ImportError as e:
     # if torch / cuda are not available, default to scipy

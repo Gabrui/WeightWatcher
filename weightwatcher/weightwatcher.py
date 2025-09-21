@@ -3354,6 +3354,7 @@ class WeightWatcher:
                 xmax=DEFAULT_XMAX,
                 base_model=None,
                 peft = DEFAULT_PEFT,
+                pbar = None,
                 inverse = False
                 ):
         """
@@ -3560,6 +3561,7 @@ class WeightWatcher:
         params[INVERSE] = inverse
 
 
+        last_time = time.time()
             
         logger.debug("params {}".format(params))
         if not WeightWatcher.valid_params(params):
@@ -3588,7 +3590,9 @@ class WeightWatcher:
                 if params[FFT]:
                      self.apply_FFT(ww_layer, params)
                     
+                t0 = time.time()
                 self.apply_esd(ww_layer, params)
+                t1 = time.time()
                 
                 
                 if ww_layer.evals is not None:
@@ -3629,6 +3633,11 @@ class WeightWatcher:
                 # details = details.append(ww_layer.get_row(), ignore_index=True)
                 data = pd.DataFrame.from_records(ww_layer.get_row() , index=[0])
                 details = pd.concat([details,data], ignore_index=True)
+                if pbar:
+                    t2  = time.time()
+                    pbar.set_postfix({'TOT': f'{t2-last_time:.1f}', 'ESD': f'{t1-t0:.2f}', 'S': [w.shape for w in ww_layer.Wmats]})
+                    pbar.update(1)
+                    last_time = t2
 
         # Reorder the columns so that layer_id and name come first.
         if len(details) > 0:
@@ -5835,7 +5844,7 @@ class SafeTensorDict(dict):
             handles = []
             for state_dict_filename in sorted(glob.glob(fileglob)):
                 logging.info(f"Opening : {state_dict_filename}")
-                f = safe_open(state_dict_filename, framework="pt", device='cpu')
+                f = safe_open(state_dict_filename, framework='numpy')
                 handles.append(f)
             return handles
         except Exception as e:
